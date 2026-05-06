@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python*)",
+      "Bash(pip*)",
+      "Bash(sqlite3*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"[$(date '+%H:%M:%S')] File written: $CLAUDE_TOOL_OUTPUT\" >> /Users/ryansheridan/ra_outreach/data/claude_activity.log"
+          }
+        ]
+      }
+    ]
+  }
+}

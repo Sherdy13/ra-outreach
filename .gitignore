@@ -1,0 +1,8 @@
+data/events.db
+data/claude_activity.log
+.env
+__pycache__/
+*.pyc
+.venv/
+NOTES.html
+NOTES_files/

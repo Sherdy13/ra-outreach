@@ -9,6 +9,7 @@ Usage:
   python main.py sent --draft-id 1
   python main.py outreach
   python main.py similar --event-id 1 --top 5
+  python main.py run --city berlin --genre techno --limit 5
 """
 
 import argparse
@@ -157,6 +158,83 @@ def cmd_drafts(args):
         print("-" * 60)
 
 
+def cmd_run(args):
+    """
+    Fetch events then batch-draft emails using the Claude agent loop.
+
+    For each eligible event (not on promoter cooldown), Claude is given a set of
+    tools it can call — get_event_details, check_outreach_history, find_similar_events —
+    and decides what to look up before writing the email. This is the agentic pattern:
+    Claude → tool call → result → Claude → ... → final draft.
+    """
+    from src.scraper import RAScraper
+    from src.agent import run_agent
+
+    cooldown = _cooldown_days()
+
+    print(f"Fetching {args.limit} {args.genre} events in {args.city}...\n")
+    scraper = RAScraper()
+    events = scraper.fetch_events(city=args.city, genre=args.genre, limit=args.limit)
+
+    eligible_ids: list[int] = []
+    for event in events:
+        row_id = storage.save_event(event)
+        if row_id:
+            event_id = row_id
+            status = "new"
+        else:
+            existing = storage.get_event_by_url(event.ra_url)
+            event_id = existing["id"] if existing else None
+            status = "existing"
+
+        if not event_id:
+            continue
+
+        on_cooldown = storage.get_cooldown_status(event.ra_promoter_url, event.promoter or "", cooldown)
+        if on_cooldown:
+            days = int(on_cooldown["days_ago"])
+            print(f"  ⚠ skip (cooldown {days}d): {event.title} @ {event.venue}")
+        else:
+            eligible_ids.append(event_id)
+            print(f"  [{status}] [{event_id}] {event.title} @ {event.venue}")
+
+    if not eligible_ids:
+        print("\nNo eligible events — all promoters are on cooldown.")
+        return
+
+    print(f"\n{len(eligible_ids)} events eligible. Starting agent drafting loop...\n")
+
+    for event_id in eligible_ids:
+        event = storage.get_event(event_id)
+        print(f"\n{'='*60}")
+        print(f"[{event_id}] {event['title']} @ {event['venue']}")
+        print("Running agent...\n")
+
+        draft_text, _ = run_agent(event_id)
+
+        print("\n" + "-" * 60)
+        print(draft_text)
+        print("-" * 60)
+        print("\n[s] save + log outreach  [k] skip  [q] quit")
+        choice = input("> ").strip().lower()
+
+        if choice == "s":
+            draft_id = storage.save_draft(event_id, draft_text, "casual")
+            promoter = event["promoter"] or event["venue"]
+            storage.log_outreach(
+                promoter_name=promoter,
+                ra_promoter_url=event["ra_promoter_url"],
+                event_id=event_id,
+                draft_id=draft_id,
+            )
+            print(f"  Saved (draft {draft_id}). {promoter} on cooldown for {cooldown} days.")
+        elif choice == "q":
+            print("Stopped.")
+            break
+        else:
+            print("  Skipped.")
+
+
 def cmd_similar(args):
     from src.recommender import find_similar
     target = storage.get_event(args.event_id)
@@ -180,6 +258,11 @@ def main():
     p_fetch.add_argument("--genre", required=True)
     p_fetch.add_argument("--limit", type=int, default=20)
 
+    p_run = sub.add_parser("run", help="Fetch events + batch-draft emails via agent loop")
+    p_run.add_argument("--city", required=True)
+    p_run.add_argument("--genre", required=True)
+    p_run.add_argument("--limit", type=int, default=5)
+
     p_draft = sub.add_parser("draft")
     p_draft.add_argument("--event-id", type=int, required=True)
     p_draft.add_argument("--tone", default="casual", choices=["casual", "formal"])
@@ -198,6 +281,7 @@ def main():
     args = parser.parse_args()
     {
         "fetch":    cmd_fetch,
+        "run":      cmd_run,
         "draft":    cmd_draft,
         "sent":     cmd_sent,
         "similar":  cmd_similar,

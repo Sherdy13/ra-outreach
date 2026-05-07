@@ -164,3 +164,47 @@ Requires a payment method on file to unlock normal rate limits (3 RPM → standa
 - Project is functionally complete for interview demo
 - Possible additions: batch draft review flow, CLAUDE.md polish, git init + README
 
+---
+
+## Session 5 — 2026-05-07
+
+### What we built
+- `README.md` — full setup and usage docs, pushed to GitHub
+- Git initialized, initial commit, remote set to github.com/Sherdy13/ra-outreach
+- `.env` confirmed never committed (keys safe)
+
+### Next session — BUILD THIS
+Add a `run` command that combines fetch + batch draft into one flow, using **Claude tool use** (function calling) for the drafting step.
+
+**The command:**
+```
+python main.py run --city berlin --genre techno --limit 5
+```
+
+**What it does:**
+1. Fetches events for city/genre, skips any promoter on cooldown automatically
+2. For each event, runs Claude as an agent with tools it can call:
+   - `get_event_details(event_id)` — fetch full event from DB
+   - `check_outreach_history(promoter_name, ra_promoter_url)` — days since last contact
+   - `find_similar_events(event_id, top_n)` — similar events for context
+3. Claude decides what to look up rather than us pre-packaging everything
+4. Shows each draft: [s]end / [e]dit / [s]kip
+5. Marks sent drafts in outreach log automatically
+
+**Why tool use matters (explain in interview):**
+- Current approach: we build ALL context in Python, pass it to Claude → lots of tokens every call
+- Tool use: Claude starts minimal, calls tools to fetch only what it needs → more efficient, more flexible
+- This is the agent loop pattern: Claude → tool call → result → Claude → ... → final answer
+- At scale, Claude might skip `find_similar_events` for obvious venues, saving tokens
+
+**New file to create:** `src/agent.py`
+- Define tools schema (JSON Schema format for Anthropic API)
+- Implement agent loop: call Claude → handle tool calls → feed results back → repeat until done
+- Import from `storage.py` and `recommender.py` for tool implementations
+
+**Context window optimization notes (for interview):**
+- Tool use is inherently more token-efficient than pre-packaging all context
+- Prompt caching on system prompt (already doing this)
+- Right-size model: Haiku for drafting, not Sonnet
+- In production: summarize long descriptions before embedding in prompts
+

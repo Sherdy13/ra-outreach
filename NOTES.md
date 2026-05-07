@@ -208,3 +208,45 @@ python main.py run --city berlin --genre techno --limit 5
 - Right-size model: Haiku for drafting, not Sonnet
 - In production: summarize long descriptions before embedding in prompts
 
+---
+
+## Session 6 — 2026-05-07
+
+### What we built
+- `src/agent.py` — tool definitions + agent loop for agentic email drafting
+- `src/storage.py` — added `get_event_by_url()` for resolving duplicate event IDs
+- `main.py` — added `run` subcommand (fetch + batch-draft in one flow)
+- PR: https://github.com/Sherdy13/ra-outreach/pull/1
+
+### How the agent loop works
+
+1. User runs `python main.py run --city berlin --genre techno --limit 5`
+2. Events are fetched and saved; promoters on cooldown are skipped
+3. For each eligible event, `run_agent(event_id)` starts the loop:
+   - User message: "Draft an outreach email for event ID {id}. Use the tools."
+   - Claude calls `get_event_details` → we return the DB row as JSON
+   - Claude optionally calls `check_outreach_history` and/or `find_similar_events`
+   - Claude produces the final draft (`stop_reason == "end_turn"`)
+4. Draft is shown; user picks `[s]ave / [k]ip / [q]uit`
+5. Saving a draft also calls `log_outreach` — starts the cooldown timer
+
+### Tool definitions (Anthropic format)
+
+Each tool is a dict with `name`, `description`, and `input_schema` (JSON Schema).
+Tool calls come back in `response.content` as blocks with `type == "tool_use"`.
+Results go back as `{"type": "tool_result", "tool_use_id": block.id, "content": <json string>}`.
+The loop continues until `stop_reason == "end_turn"`.
+
+### Key contrast: drafter.py vs agent.py
+
+| | drafter.py | agent.py |
+|---|---|---|
+| Context assembly | Python pre-packages everything | Claude fetches only what it needs |
+| Tool calls | None | 2–3 per draft typically |
+| Token efficiency | Fixed cost per event | Variable — Claude skips unnecessary calls |
+| Flexibility | Rigid | Claude can adapt based on what it finds |
+
+### Next ideas
+- Streaming output while Claude writes the draft (good live demo effect)
+- Message Batches API — submit all drafts async, poll for results, 50% cost reduction
+

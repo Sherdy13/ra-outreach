@@ -247,6 +247,72 @@ The loop continues until `stop_reason == "end_turn"`.
 | Flexibility | Rigid | Claude can adapt based on what it finds |
 
 ### Next ideas
-- Streaming output while Claude writes the draft (good live demo effect)
-- Message Batches API — submit all drafts async, poll for results, 50% cost reduction
+- ~~Streaming output while Claude writes the draft~~ ✓ done session 7
+- ~~Message Batches API~~ ✓ done session 7
+
+---
+
+## Session 7 — 2026-05-07
+
+### What we built
+- Streaming output in `drafter.py` and `agent.py` — tokens print live as Claude writes
+- `src/batcher.py` — Anthropic Batches API: submit, poll, collect
+- `src/storage.py` — `batches` table + CRUD
+- `main.py` — three new commands: `batch-run`, `batch-collect`, `batches`
+- Updated CLAUDE.md, README.md, NOTES.md
+
+### Streaming (drafter.py + agent.py)
+
+**Change:** `client.messages.create()` → `client.messages.stream()` context manager.
+
+```python
+with client.messages.stream(...) as stream:
+    for token in stream.text_stream:
+        print(token, end="", flush=True)
+    final = stream.get_final_message()  # usage stats + full content
+```
+
+`stream.text_stream` is a generator that yields text tokens only. In the agent loop, tool-use rounds produce no text so the generator is silent — tool calls print their own `→ tool_name(...)` line. The final `end_turn` call streams the email.
+
+In `cmd_draft`, the separator lines now wrap the streaming call so text appears between them — no post-call reprint needed.
+
+### Message Batches API (batcher.py)
+
+**Submit:**
+```python
+batch = client.beta.messages.batches.create(requests=[
+    {"custom_id": "event_3", "params": {model, max_tokens, system, messages}},
+    ...
+])
+batch_id = batch.id
+```
+
+Each `params` dict is identical to a `messages.create()` call — same model, same system prompt with `cache_control`, same messages format.
+
+**Poll:**
+```python
+batch = client.beta.messages.batches.retrieve(batch_id)
+batch.processing_status  # "in_progress" | "ended"
+batch.request_counts     # .processing, .succeeded, .errored
+```
+
+**Collect results:**
+```python
+for result in client.beta.messages.batches.results(batch_id):
+    result.custom_id          # "event_3"
+    result.result.type        # "succeeded" | "errored" | "expired"
+    result.result.message     # full Message object (if succeeded)
+```
+
+**custom_id → event_id mapping** stored as JSON in the `batches` table so we can match results back to events after the fact.
+
+### Drafting mode comparison (interview table)
+
+| | `draft` | `run` | `batch-run` |
+|---|---|---|---|
+| API pattern | messages.stream | messages.stream + tool use | Batches API (async) |
+| Context assembly | Python pre-packages | Claude fetches via tools | Python pre-packages |
+| Output | Streams live | Streams live (final call) | No live output |
+| Cost | Standard | Standard + tool overhead | ~50% cheaper |
+| Best for | Single event | Small batch, want live output | Bulk, no rush |
 

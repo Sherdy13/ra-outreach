@@ -10,6 +10,9 @@ Usage:
   python main.py outreach
   python main.py similar --event-id 1 --top 5
   python main.py run --city berlin --genre techno --limit 5
+  python main.py batch-run --city berlin --genre techno --limit 10
+  python main.py batch-collect --batch-id <id>
+  python main.py batches
 """
 
 import argparse
@@ -235,6 +238,121 @@ def cmd_run(args):
             print("  Skipped.")
 
 
+def cmd_batch_run(args):
+    """
+    Fetch events and submit all draft requests as a single async batch.
+    Results are available in ~1–5 minutes at up to 50% cost reduction.
+    Run batch-collect with the returned batch ID to review drafts.
+    """
+    from src.scraper import RAScraper
+    from src.batcher import build_batch_requests, submit_batch
+
+    cooldown = _cooldown_days()
+    print(f"Fetching {args.limit} {args.genre} events in {args.city}...\n")
+    scraper = RAScraper()
+    events = scraper.fetch_events(city=args.city, genre=args.genre, limit=args.limit)
+
+    eligible_ids: list[int] = []
+    for event in events:
+        row_id = storage.save_event(event)
+        if row_id:
+            event_id, status = row_id, "new"
+        else:
+            existing = storage.get_event_by_url(event.ra_url)
+            event_id = existing["id"] if existing else None
+            status = "existing"
+
+        if not event_id:
+            continue
+
+        on_cooldown = storage.get_cooldown_status(event.ra_promoter_url, event.promoter or "", cooldown)
+        if on_cooldown:
+            days = int(on_cooldown["days_ago"])
+            print(f"  ⚠ skip (cooldown {days}d): {event.title} @ {event.venue}")
+        else:
+            eligible_ids.append(event_id)
+            print(f"  [{status}] [{event_id}] {event.title} @ {event.venue}")
+
+    if not eligible_ids:
+        print("\nNo eligible events — all promoters are on cooldown.")
+        return
+
+    print(f"\nBuilding {len(eligible_ids)} batch requests...")
+    requests, id_map = build_batch_requests(eligible_ids, tone=args.tone)
+    batch_id = submit_batch(requests)
+    storage.save_batch(batch_id, id_map)
+
+    print(f"\nBatch submitted: {batch_id}")
+    print(f"  {len(requests)} requests | results typically ready in 1–5 minutes")
+    print(f"\nCollect results with:")
+    print(f"  python main.py batch-collect --batch-id {batch_id}")
+
+
+def cmd_batch_collect(args):
+    """Poll a submitted batch until done, then review each draft interactively."""
+    from src.batcher import poll_until_done, get_results
+
+    batch = storage.get_batch(args.batch_id)
+    if not batch:
+        print(f"No batch found: {args.batch_id}")
+        print("List all batches: python main.py batches")
+        sys.exit(1)
+
+    id_map = json.loads(batch["event_map"])
+    cooldown = _cooldown_days()
+
+    print(f"Polling batch {args.batch_id} (Ctrl-C to abort)...")
+    poll_until_done(args.batch_id)
+    storage.update_batch_status(args.batch_id, "complete")
+
+    results = get_results(args.batch_id)
+    succeeded = [r for r in results if r.result.type == "succeeded"]
+    errored = len(results) - len(succeeded)
+    print(f"{len(succeeded)} drafts ready" + (f", {errored} errored" if errored else "") + ".\n")
+
+    for result in succeeded:
+        event_id = id_map.get(result.custom_id)
+        if not event_id:
+            continue
+        event = storage.get_event(event_id)
+        draft_text = result.result.message.content[0].text.strip()
+
+        print(f"\n{'='*60}")
+        print(f"[{event_id}] {event['title']} @ {event['venue']}")
+        print("-" * 60)
+        print(draft_text)
+        print("-" * 60)
+        print("\n[s] save + log outreach  [k] skip  [q] quit")
+        choice = input("> ").strip().lower()
+
+        if choice == "s":
+            draft_id = storage.save_draft(event_id, draft_text, "casual")
+            promoter = event["promoter"] or event["venue"]
+            storage.log_outreach(
+                promoter_name=promoter,
+                ra_promoter_url=event["ra_promoter_url"],
+                event_id=event_id,
+                draft_id=draft_id,
+            )
+            print(f"  Saved (draft {draft_id}). {promoter} on cooldown for {cooldown} days.")
+        elif choice == "q":
+            print("Stopped.")
+            break
+        else:
+            print("  Skipped.")
+
+
+def cmd_batches(args):
+    """List all submitted batches."""
+    batches = storage.list_batches()
+    if not batches:
+        print("No batches submitted yet. Run: python main.py batch-run --city <city> --genre <genre>")
+        return
+    for b in batches:
+        event_map = json.loads(b["event_map"])
+        print(f"  [{b['id']}] {b['status']} — {len(event_map)} events — {b['submitted_at'][:16]}")
+
+
 def cmd_similar(args):
     from src.recommender import find_similar
     target = storage.get_event(args.event_id)
@@ -270,24 +388,37 @@ def main():
     p_sent = sub.add_parser("sent")
     p_sent.add_argument("--draft-id", type=int, required=True)
 
+    p_batch_run = sub.add_parser("batch-run", help="Fetch events + submit batch draft requests")
+    p_batch_run.add_argument("--city", required=True)
+    p_batch_run.add_argument("--genre", required=True)
+    p_batch_run.add_argument("--limit", type=int, default=10)
+    p_batch_run.add_argument("--tone", default="casual", choices=["casual", "formal"])
+
+    p_batch_collect = sub.add_parser("batch-collect", help="Poll a batch and review drafts")
+    p_batch_collect.add_argument("--batch-id", required=True)
+
     p_similar = sub.add_parser("similar")
     p_similar.add_argument("--event-id", type=int, required=True)
     p_similar.add_argument("--top", type=int, default=5)
 
     sub.add_parser("list")
     sub.add_parser("drafts")
+    sub.add_parser("batches")
     sub.add_parser("outreach")
 
     args = parser.parse_args()
     {
-        "fetch":    cmd_fetch,
-        "run":      cmd_run,
-        "draft":    cmd_draft,
-        "sent":     cmd_sent,
-        "similar":  cmd_similar,
-        "list":     cmd_list,
-        "drafts":   cmd_drafts,
-        "outreach": cmd_outreach,
+        "fetch":          cmd_fetch,
+        "run":            cmd_run,
+        "batch-run":      cmd_batch_run,
+        "batch-collect":  cmd_batch_collect,
+        "batches":        cmd_batches,
+        "draft":          cmd_draft,
+        "sent":           cmd_sent,
+        "similar":        cmd_similar,
+        "list":           cmd_list,
+        "drafts":         cmd_drafts,
+        "outreach":       cmd_outreach,
     }[args.command](args)
 
 

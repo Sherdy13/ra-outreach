@@ -79,13 +79,11 @@ def cmd_draft(args):
         print(f"Website: {event['contact_website']}")
     print()
 
+    print("-" * 60)
     current_draft, _ = draft_email(event_dict, tone=args.tone)
-    draft_id = None
+    print("-" * 60)
 
     while True:
-        print("-" * 60)
-        print(current_draft)
-        print("-" * 60)
         print("\n[s] save  [r] refine  [q] quit without saving")
         choice = input("> ").strip().lower()
 
@@ -97,7 +95,9 @@ def cmd_draft(args):
         elif choice == "r":
             feedback = input("What to change? ").strip()
             if feedback:
+                print("-" * 60)
                 current_draft, _ = refine_email(current_draft, feedback, event_dict, tone=args.tone)
+                print("-" * 60)
         elif choice == "q":
             print("Discarded.")
             break

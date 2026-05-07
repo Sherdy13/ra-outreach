@@ -134,19 +134,23 @@ def _report_usage(usage: dict, label: str = "") -> None:
 
 def _call(messages: list, system_prompt: str) -> tuple[str, dict]:
     client = get_client()
-    response = client.messages.create(
+    with client.messages.stream(
         model="claude-haiku-4-5-20251001",
         max_tokens=500,
         system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
         messages=messages,
-    )
+    ) as stream:
+        for token in stream.text_stream:
+            print(token, end="", flush=True)
+        print()  # newline after stream ends
+        final = stream.get_final_message()
     usage = {
-        "input_tokens":  response.usage.input_tokens,
-        "output_tokens": response.usage.output_tokens,
-        "cache_read":    getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-        "cache_created": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+        "input_tokens":  final.usage.input_tokens,
+        "output_tokens": final.usage.output_tokens,
+        "cache_read":    getattr(final.usage, "cache_read_input_tokens", 0) or 0,
+        "cache_created": getattr(final.usage, "cache_creation_input_tokens", 0) or 0,
     }
-    return response.content[0].text.strip(), usage
+    return final.content[0].text.strip(), usage
 
 
 def draft_email(event: dict, tone: str = "casual") -> tuple[str, dict]:

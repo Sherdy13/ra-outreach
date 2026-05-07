@@ -168,6 +168,11 @@ def list_outreach_log() -> list[sqlite3.Row]:
         """).fetchall()
 
 
+def get_event_by_url(ra_url: str) -> Optional[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute("SELECT * FROM events WHERE ra_url = ?", (ra_url,)).fetchone()
+
+
 def list_drafts() -> list[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute("""

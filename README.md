@@ -6,9 +6,10 @@ A CLI tool for DJs to find events on Resident Advisor, save promoter contact inf
 
 1. **Fetches** RA event listings by city and genre via Resident Advisor's GraphQL API
 2. **Stores** event data (venue, promoter, description, contacts) in a local SQLite database
-3. **Drafts** personalized outreach emails using Claude AI, with a refine loop before saving
-4. **Tracks** who you've contacted with a configurable cooldown window (default 90 days)
-5. **Recommends** similar events using Voyage AI embeddings + cosine similarity
+3. **Drafts** personalized outreach emails using Claude AI, with streaming output and a refine loop before saving
+4. **Batch-drafts** via an agentic loop (`run`) or the Anthropic Batches API (`batch-run`) for async, ~50% cheaper bulk drafting
+5. **Tracks** who you've contacted with a configurable cooldown window (default 90 days)
+6. **Recommends** similar events using Voyage AI embeddings + cosine similarity
 
 ## Setup
 
@@ -73,12 +74,33 @@ python main.py outreach
 
 # Find events similar to a saved event
 python main.py similar --event-id 3 --top 5
+
+# Fetch + batch-draft emails in one go (agent loop, streaming)
+python main.py run --city berlin --genre techno --limit 5
+
+# Submit an async batch (fire and forget, ~50% cheaper)
+python main.py batch-run --city berlin --genre techno --limit 10
+
+# Come back later and collect results
+python main.py batch-collect --batch-id <id>
+
+# List all submitted batches
+python main.py batches
 ```
 
 ## How it works
 
 ### Email drafting
-Emails are drafted using Claude (Haiku model). The system prompt — which includes your profile, links, and writing style — is marked with `cache_control: ephemeral`. This caches it server-side for ~5 minutes, making repeat calls (e.g. batch drafting or refining) ~10x cheaper. The draft command drops you into a loop where you can refine before saving.
+
+Three modes, each a step up in scale and cost efficiency:
+
+| Command | How it works | Best for |
+|---|---|---|
+| `draft` | Single event, streaming output, interactive refine loop | One-off emails |
+| `run` | Agent loop — Claude calls tools to fetch context, streams final email | Batch of 5–10, want live output |
+| `batch-run` / `batch-collect` | All requests submitted async via Batches API, ~50% cheaper | Bulk drafting, no rush |
+
+All three use claude-haiku and mark the system prompt with `cache_control: ephemeral` for server-side caching (~5 min TTL). All Claude responses stream token-by-token.
 
 ### Event similarity
 Each event's title, genre, venue, and description are embedded into a 1024-dimensional vector using Voyage AI's `voyage-3` model. Similarity is measured with cosine similarity. Embeddings are stored in the database after first use — so the API is only called once per event ever.
@@ -96,6 +118,8 @@ src/
   storage.py               — SQLite: events, drafts, outreach log, embeddings
   drafter.py               — Claude API email drafting + refinement
   recommender.py           — Voyage AI embeddings + cosine similarity
+  agent.py                 — Tool definitions + agent loop for run command
+  batcher.py               — Batches API submit / poll / collect
 .claude/
   settings.json            — Claude Code hooks and permissions
   commands/                — Custom Claude Code slash commands

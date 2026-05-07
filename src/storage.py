@@ -2,6 +2,7 @@
 SQLite persistence layer for events, contacts, and email drafts.
 """
 
+import json
 import sqlite3
 import struct
 from pathlib import Path
@@ -53,6 +54,13 @@ def init_db() -> None:
                 event_id         INTEGER REFERENCES events(id),
                 draft_id         INTEGER REFERENCES drafts(id),
                 sent_at          TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS batches (
+                id           TEXT PRIMARY KEY,
+                submitted_at TEXT DEFAULT (datetime('now')),
+                status       TEXT DEFAULT 'pending',
+                event_map    TEXT NOT NULL
             );
         """)
 
@@ -166,6 +174,31 @@ def list_outreach_log() -> list[sqlite3.Row]:
             JOIN events e ON e.id = o.event_id
             ORDER BY o.sent_at DESC
         """).fetchall()
+
+
+def save_batch(batch_id: str, event_map: dict) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO batches (id, event_map) VALUES (?, ?)",
+            (batch_id, json.dumps(event_map)),
+        )
+
+
+def get_batch(batch_id: str) -> Optional[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute("SELECT * FROM batches WHERE id = ?", (batch_id,)).fetchone()
+
+
+def update_batch_status(batch_id: str, status: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE batches SET status = ? WHERE id = ?", (status, batch_id))
+
+
+def list_batches() -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM batches ORDER BY submitted_at DESC"
+        ).fetchall()
 
 
 def get_event_by_url(ra_url: str) -> Optional[sqlite3.Row]:

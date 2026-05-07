@@ -155,23 +155,28 @@ def run_agent(event_id: int) -> tuple[str, dict]:
     tool_calls_made = 0
 
     while True:
-        response = client.messages.create(
+        with client.messages.stream(
             model="claude-haiku-4-5-20251001",
             max_tokens=800,
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             tools=_TOOLS,
             messages=messages,
-        )
+        ) as stream:
+            # Stream text tokens live — only fires on the final end_turn call.
+            # Tool-use rounds produce no text so this is silent during tool calls.
+            for token in stream.text_stream:
+                print(token, end="", flush=True)
+            response = stream.get_final_message()
 
         total_usage["input_tokens"]  += response.usage.input_tokens
         total_usage["output_tokens"] += response.usage.output_tokens
         total_usage["cache_read"]    += getattr(response.usage, "cache_read_input_tokens", 0) or 0
         total_usage["cache_created"] += getattr(response.usage, "cache_creation_input_tokens", 0) or 0
 
-        # Append Claude's response to the conversation before dispatching tools
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
+            print()  # newline after streamed email
             text = next(
                 (block.text for block in response.content if hasattr(block, "text")),
                 "",
